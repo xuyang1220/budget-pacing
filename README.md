@@ -176,6 +176,7 @@ Possible next steps:
 - Bid landscape estimation
 - Reinforcement learning ranking
 - Segment-specific delay distributions
+- Multi-slot GSP auction
 
 ---
 
