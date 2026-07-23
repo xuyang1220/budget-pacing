@@ -180,6 +180,64 @@ Possible next steps:
 
 ---
 
+# 9. Running the Live Kafka + Spark Pipeline
+
+The budget/pacing loop described in section 2 can also be run as a live pipeline instead of the notebook simulation: `src/kafka_producer.py` simulates a bidder publishing auction and click events to Kafka, and `src/bc_bidding_pacing.py` is a Spark Structured Streaming job that aggregates spend/wins/clicks per minute, recomputes the pacing multiplier, and publishes it back to Kafka for the producer to pick up on its next bids.
+
+## 9.1 Prerequisites
+
+- JDK 17+ (`JAVA_HOME` set — PySpark needs a JVM to launch)
+- `pip install pyspark kafka-python`
+- A local Kafka broker. Kafka 4.x runs standalone in KRaft mode (no Zookeeper needed):
+
+```bash
+# one-time setup
+curl -O https://downloads.apache.org/kafka/4.3.1/kafka_2.13-4.3.1.tgz
+tar -xzf kafka_2.13-4.3.1.tgz && mv kafka_2.13-4.3.1 ~/kafka
+cd ~/kafka
+KAFKA_CLUSTER_ID=$(bin/kafka-storage.sh random-uuid)
+bin/kafka-storage.sh format --standalone -t "$KAFKA_CLUSTER_ID" -c config/server.properties
+```
+
+## 9.2 Starting it (three terminals)
+
+```bash
+# 1. Kafka broker
+cd ~/kafka && bin/kafka-server-start.sh config/server.properties
+
+# 2. Spark pacing controller (creates bc-auctions/bc-clicks/bc-pacing-mult topics on first use)
+cd /home/riffxu/budget-pacing
+python -u -m src.bc_bidding_pacing --total-budget 100 --horizon-minutes 60
+
+# 3. Kafka producer (simulated bidder)
+cd /home/riffxu/budget-pacing
+python -m src.kafka_producer --auctions-per-minute 200 --seed 42
+```
+
+Run each with `--help` to see all flags (bootstrap servers, topic names, campaign id, bid clamps, etc).
+
+## 9.3 Monitoring
+
+- **Terminal 2's own output** is the main signal — every trigger interval (30s by default) it prints one line per campaign, e.g. `[auctions] campaign=sim-campaign-1 window_end=... spend=54.21/6.67 mult=0.232 wins=412 auctions=1780 win_rate=0.232`. Compare `spend` to the target figure after the `/` to see over/under-pacing, and watch `mult` for convergence vs. oscillation.
+- **Spark UI** at [http://localhost:4040](http://localhost:4040) while the controller is running — the "Structured Streaming" tab shows both queries' batch duration and input rate, useful for confirming the job isn't falling behind its trigger interval.
+- **Raw topics**, for ground truth independent of the app's own logging:
+  ```bash
+  cd ~/kafka
+  bin/kafka-console-consumer.sh --bootstrap-server localhost:9092 --topic bc-auctions
+  bin/kafka-console-consumer.sh --bootstrap-server localhost:9092 --topic bc-pacing-mult
+  ```
+  (omit `--from-beginning`/`--timeout-ms` when just watching live — Ctrl+C to stop; these topics never go idle while the producer runs, so an idle-timeout will hang instead of exiting.)
+
+## 9.4 Stopping it
+
+```bash
+pkill -f src.kafka_producer
+pkill -f src.bc_bidding_pacing
+~/kafka/bin/kafka-server-stop.sh   # graceful broker shutdown
+```
+
+---
+
 # Takeaway
 
 This simulator reconstructs core mechanics of real-world tCPA bidding systems:
